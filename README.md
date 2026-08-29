@@ -387,6 +387,8 @@ Optional:
 - `PLAN_LABEL` (default `plan`), the GitHub label that routes a PR to plan mode; see [Two review modes](#two-review-modes)
 - `MAX_PASSES_PER_SESSION` (rotate a session to a fresh one every N passes, per (PR, mode, persona) pair; `0` = never)
 - `LINEAR_API_KEY` (optional Linear ticket context; use a **read-only** key — see [Linear ticket context](#linear-ticket-context))
+- `ADR_DIR` (optional; e.g. `docs/adr`) — the repo attaches a decision record to every PR under this directory; the reviewer reads it before the diff and reviews both directions (undeclared changes in the diff, unsound or reconstructed reasoning in the record). Appended to the DEFAULT prompts only, like the Linear stanza.
+- `RUN_ONCE` (`1`/`true`) — exit after the first fully completed cycle instead of sleeping. For manual per-PR triggering (`claudebox.sh test --prs N`); do not combine with `run` mode's `--restart unless-stopped`, which would relaunch the exited container into an endless review loop.
 - `--export-sessions` (launcher flag, not an env var) — export review transcripts to the host and align the session folder; see [Exporting review sessions to your host](#exporting-review-sessions-to-your-host)
 
 ### PR selection
