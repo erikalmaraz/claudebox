@@ -63,7 +63,8 @@ strip_surrounding_quotes \
   CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN \
   GITHUB_TOKEN GITHUB_REPOSITORY LINEAR_API_KEY \
   PR_ASSIGNEE PR_IDS PR_SEARCH \
-  PERSONAS PLAN_PERSONAS PERSONA_DIR PLAN_LABEL LIMIT_BACKOFF_SECONDS REPO_PATH
+  PERSONAS PLAN_PERSONAS PERSONA_DIR PLAN_LABEL LIMIT_BACKOFF_SECONDS REPO_PATH \
+  ADR_DIR RUN_ONCE
 # The prompt vars (REVIEW_PROMPT, FOLLOWUP_PROMPT, their _SUFFIX forms, and the
 # PLAN_-prefixed counterparts of all four) are deliberately absent from that
 # list. Everything else on it is a URL, an id, a credential, or a name or number
@@ -399,6 +400,17 @@ linear_stanza() {
   printf '%s' " If the PR title, body, or branch name references a Linear ticket, look that ticket up with the Linear MCP tools and read both its description and its comments — comments often carry later feedback, scope changes, and revised requirements that the description doesn't. Judge the change against what the ticket actually asks for, and raise any divergence from its stated requirements or acceptance criteria as a finding like any other. If no ticket is referenced, or you can't resolve the reference, review the code as usual — a missing ticket is not itself a finding."
 }
 
+# Echo the review-prompt stanza for repos that attach a decision record to
+# every PR (set ADR_DIR to the in-repo directory, e.g. docs/adr), or nothing
+# when unset. Same contract as linear_stanza: leading space, DEFAULTS only.
+# The both-directions instruction is the point: the ADR is review input AND
+# review subject, and the reconstructed-log check exists because a plausible
+# after-the-fact summary passes every file-presence gate.
+adr_stanza() {
+  [ -n "${ADR_DIR:-}" ] || return 0
+  printf '%s' " This repository attaches a decision record to every pull request under ${ADR_DIR}/ — a running log of the implementation decisions (each entry: decision, why, alternatives rejected). Find the file(s) this PR adds or updates there in its file list and read them before the diff. Review in both directions. The diff against the record: flag changes that implement a decision the record never mentions, and code that deviates from what the record says was decided. The record against the diff: flag decisions whose stated reasoning is unsound, rejected alternatives that look stronger than the chosen path, and a record that reads as reconstructed after the fact — one bulk entry restating the final diff instead of a log kept while decisions were made. A PR that touches nothing under ${ADR_DIR}/ is itself a finding. Judge the change against what the record says was intended, not only against what the diff happens to do."
+}
+
 # Write the MCP server config to $1 and return 0, or return 1 when there's
 # nothing to configure. The key is passed via env.LINEAR_API_KEY (not --arg)
 # so it never appears in the jq argv/`ps` output; jq's JSON string handling
@@ -533,11 +545,12 @@ DEFAULT_PLAN_FOLLOWUP="I've fetched the latest refs. Re-read the plan in pull re
 # Linear context is added to the DEFAULTS only: an operator who supplied their own
 # prompt gets exactly that prompt, unedited. No-op when LINEAR_API_KEY is unset.
 _linear_stanza="$(linear_stanza)"
-DEFAULT_PROMPT="${DEFAULT_PROMPT}${_linear_stanza}"
-DEFAULT_FOLLOWUP="${DEFAULT_FOLLOWUP}${_linear_stanza}"
-DEFAULT_PLAN_PROMPT="${DEFAULT_PLAN_PROMPT}${_linear_stanza}"
-DEFAULT_PLAN_FOLLOWUP="${DEFAULT_PLAN_FOLLOWUP}${_linear_stanza}"
-unset _linear_stanza _gh_stanza _test_stanza _plan_stanza
+_adr_stanza="$(adr_stanza)"
+DEFAULT_PROMPT="${DEFAULT_PROMPT}${_linear_stanza}${_adr_stanza}"
+DEFAULT_FOLLOWUP="${DEFAULT_FOLLOWUP}${_linear_stanza}${_adr_stanza}"
+DEFAULT_PLAN_PROMPT="${DEFAULT_PLAN_PROMPT}${_linear_stanza}${_adr_stanza}"
+DEFAULT_PLAN_FOLLOWUP="${DEFAULT_PLAN_FOLLOWUP}${_linear_stanza}${_adr_stanza}"
+unset _linear_stanza _adr_stanza _gh_stanza _test_stanza _plan_stanza
 # Keyed "$mode". An operator override replaces that mode's default only, so
 # tuning the code prompt cannot silently change what a plan PR is asked.
 declare -A MODE_REVIEW_PROMPT=()
@@ -1387,6 +1400,14 @@ while true; do
     # failures are swallowed above, so "no candidate PRs" can mean gh had a bad
     # minute, and that must not silently send the next cycle back to the head.
     RESUME_AT=""
+  fi
+
+  # RUN_ONCE exits only on a genuinely finished cycle: a usage-limit backoff or
+  # a mid-cycle resume point means unreviewed pairs remain, and exiting there
+  # would report "done" on work that never ran.
+  if pr_truthy "${RUN_ONCE:-}" && [ "$limited" != 1 ] && [ -z "$RESUME_AT" ]; then
+    log "RUN_ONCE: cycle complete. Exiting."
+    exit 0
   fi
 
   if [ "$limited" = 1 ]; then
