@@ -64,7 +64,7 @@ strip_surrounding_quotes \
   GITHUB_TOKEN GITHUB_REPOSITORY LINEAR_API_KEY \
   PR_ASSIGNEE PR_IDS PR_SEARCH \
   PERSONAS PLAN_PERSONAS PERSONA_DIR PLAN_LABEL LIMIT_BACKOFF_SECONDS REPO_PATH \
-  ADR_DIR RUN_ONCE
+  ADR_DIR RUN_ONCE MAX_CYCLES
 # The prompt vars (REVIEW_PROMPT, FOLLOWUP_PROMPT, their _SUFFIX forms, and the
 # PLAN_-prefixed counterparts of all four) are deliberately absent from that
 # list. Everything else on it is a URL, an id, a credential, or a name or number
@@ -481,6 +481,11 @@ else
   WORK_REPO="$WORK_DIR/repo"
 fi
 REVIEW_INTERVAL_SECONDS="${REVIEW_INTERVAL_SECONDS:-300}"
+# Cap on COMPLETE review cycles; 0 = unbounded. A cycle only counts when it
+# walked the whole PR list without a usage-limit backoff or a resume point, so
+# the cap can never exit with reviews pending.
+MAX_CYCLES="${MAX_CYCLES:-0}"
+case "$MAX_CYCLES" in ''|*[!0-9]*) die "MAX_CYCLES must be a non-negative integer (got '$MAX_CYCLES')" ;; esac
 # How long to wait after a pass fails on a usage or rate limit, instead of the
 # normal interval. Long by default: the limit that stopped us is measured in
 # hours on most plans, and retrying into it costs the same allowance twice.
@@ -1135,6 +1140,7 @@ git -C "$WORK_REPO" remote set-url origin "https://github.com/${GITHUB_REPOSITOR
   || git -C "$WORK_REPO" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
 
 log "Reviewer ready. repo=$GITHUB_REPOSITORY provider=$PROVIDER_LABEL model=$REVIEW_MODEL interval=${REVIEW_INTERVAL_SECONDS}s"
+CYCLES_DONE=0
 
 # --- Review loop -----------------------------------------------------------
 # One Claude session PER (PR, PERSONA) PAIR. Each cycle the supervisor fetches
@@ -1402,12 +1408,19 @@ while true; do
     RESUME_AT=""
   fi
 
-  # RUN_ONCE exits only on a genuinely finished cycle: a usage-limit backoff or
-  # a mid-cycle resume point means unreviewed pairs remain, and exiting there
-  # would report "done" on work that never ran.
-  if pr_truthy "${RUN_ONCE:-}" && [ "$limited" != 1 ] && [ -z "$RESUME_AT" ]; then
-    log "RUN_ONCE: cycle complete. Exiting."
-    exit 0
+  # RUN_ONCE and MAX_CYCLES exit only on a genuinely finished cycle: a
+  # usage-limit backoff or a mid-cycle resume point means unreviewed pairs
+  # remain, and exiting there would report "done" on work that never ran.
+  if [ "$limited" != 1 ] && [ -z "$RESUME_AT" ]; then
+    CYCLES_DONE=$((CYCLES_DONE + 1))
+    if pr_truthy "${RUN_ONCE:-}"; then
+      log "RUN_ONCE: cycle complete. Exiting."
+      exit 0
+    fi
+    if [ "$MAX_CYCLES" -gt 0 ] && [ "$CYCLES_DONE" -ge "$MAX_CYCLES" ]; then
+      log "MAX_CYCLES=$MAX_CYCLES reached ($CYCLES_DONE complete cycles). Exiting."
+      exit 0
+    fi
   fi
 
   if [ "$limited" = 1 ]; then
